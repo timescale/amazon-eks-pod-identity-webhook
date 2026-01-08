@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/aws/amazon-eks-pod-identity-webhook/pkg"
+	"github.com/aws/amazon-eks-pod-identity-webhook/pkg/broker"
 	"github.com/aws/amazon-eks-pod-identity-webhook/pkg/cache"
 	cachedebug "github.com/aws/amazon-eks-pod-identity-webhook/pkg/cache/debug"
 	"github.com/aws/amazon-eks-pod-identity-webhook/pkg/cert"
@@ -84,6 +85,12 @@ func main() {
 	containerCredentialsVolumeName := flag.String("container-credentials-token-volume-name", "eks-pod-identity-token", "The name of the projected volume containing the injected service account token. This is only used by the AWS Container Credentials method")
 	containerCredentialsTokenPath := flag.String("container-credentials-token-path", "eks-pod-identity-token", "The path of the injected service account token. This is only used by the AWS Container Credentials method")
 	containerCredentialsFullUri := flag.String("container-credentials-full-uri", "http://169.254.170.23/v1/credentials", "AWS_CONTAINER_CREDENTIALS_FULL_URI will be set to this value in mutated containers")
+
+	// Session Tags / Broker Mode configuration
+	enableBrokerMode := flag.Bool("enable-broker-mode", false, "Enable session tags broker mode. When enabled, ServiceAccounts with target-role-arn annotation will use a sidecar to assume roles with session tags")
+	brokerImage := flag.String("broker-image", pkg.DefaultBrokerImage, "Container image for the credential broker sidecar")
+	brokerCredentialsPath := flag.String("broker-credentials-path", pkg.DefaultCredentialsPath, "Path to mount the shared AWS credentials file in broker mode")
+	brokerSTSEndpoint := flag.String("broker-sts-endpoint", "", "Custom STS endpoint for broker mode (for testing)")
 
 	version := flag.Bool("version", false, "Display the version and exit")
 
@@ -207,6 +214,19 @@ func main() {
 		}
 	}
 
+	// Configure broker mode for session tags
+	var brokerConfig *broker.Config
+	if *enableBrokerMode {
+		klog.Infof("Broker mode enabled with image: %s", *brokerImage)
+		brokerConfig = &broker.Config{
+			Enabled:                true,
+			DefaultBrokerImage:     *brokerImage,
+			DefaultCredentialsPath: *brokerCredentialsPath,
+			Region:                 *region,
+			STSEndpoint:            *brokerSTSEndpoint,
+		}
+	}
+
 	mod := handler.NewModifier(
 		random,
 		handler.WithAnnotationDomain(*annotationPrefix),
@@ -215,6 +235,7 @@ func main() {
 		handler.WithContainerCredentialsConfig(containerCredentialsConfig),
 		handler.WithRegion(*region),
 		handler.WithSALookupGraceTime(*saLookupGracePeriod),
+		handler.WithBrokerConfig(brokerConfig),
 	)
 
 	addr := fmt.Sprintf(":%d", *port)

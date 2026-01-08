@@ -27,4 +27,30 @@ const (
 	// AWS SDK defined environment variables.
 	AwsEnvVarContainerCredentialsFullUri     = "AWS_CONTAINER_CREDENTIALS_FULL_URI"
 	AwsEnvVarContainerAuthorizationTokenFile = "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"
+
+	// Credential Broker (Session Tags Mode) constants
+	// Default broker sidecar image
+	DefaultBrokerImage = "ghcr.io/aws/eks-pod-identity-broker:latest"
+	// Default path for shared AWS credentials file
+	DefaultCredentialsPath = "/var/run/aws-credentials"
+	// Default credentials filename
+	DefaultCredentialsFile = "credentials"
+	// Environment variable for shared credentials file path
+	AwsEnvVarSharedCredentialsFile = "AWS_SHARED_CREDENTIALS_FILE"
+	// Broker container name
+	BrokerContainerName = "aws-credential-broker"
+	// Credentials volume name
+	CredentialsVolumeName = "aws-credentials"
+	// IRSA token volume name for broker
+	BrokerTokenVolumeName = "aws-iam-token"
+	// Default IRSA token mount path
+	DefaultIRSATokenPath = "/var/run/secrets/eks.amazonaws.com/serviceaccount"
+	// Default IRSA token filename
+	DefaultIRSATokenFile = "token"
+
+	// Broker resource defaults
+	DefaultBrokerCPURequest    = "10m"
+	DefaultBrokerMemoryRequest = "32Mi"
+	DefaultBrokerCPULimit      = "100m"
+	DefaultBrokerMemoryLimit   = "64Mi"
 )

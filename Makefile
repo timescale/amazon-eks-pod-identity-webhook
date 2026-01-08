@@ -8,7 +8,9 @@ install:: build
 # Generic make
 REGISTRY?=public.ecr.aws
 IMAGE_NAME?=eks/pod-identity-webhook
+BROKER_IMAGE_NAME?=eks/pod-identity-broker
 IMAGE?=$(REGISTRY)/$(IMAGE_NAME)
+BROKER_IMAGE?=$(REGISTRY)/$(BROKER_IMAGE_NAME)
 
 GIT_COMMIT ?= $(shell git log -1 --pretty=%h)
 
@@ -40,6 +42,15 @@ image: .image-linux-amd64
 
 amazon-eks-pod-identity-webhook:
 	hack/amazon-eks-pod-identity-webhook.sh
+
+# Broker sidecar for session tags mode
+.PHONY: broker
+broker:
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o ./credential-broker ./cmd/broker
+
+.PHONY: broker-image
+broker-image:
+	docker build -f Dockerfile.broker -t $(BROKER_IMAGE):$(GIT_COMMIT) .
 
 certs/tls.key:
 	mkdir -p certs
@@ -95,8 +106,9 @@ delete-config:
 
 clean::
 	rm -rf ./amazon-eks-pod-identity-webhook
+	rm -rf ./credential-broker
 	rm -rf ./certs/ coverage.out
 
-.PHONY: image build local-serve local-request cluster-up cluster-down prep-config deploy-config delete-config clean
+.PHONY: image build local-serve local-request cluster-up cluster-down prep-config deploy-config delete-config clean broker broker-image
 
 

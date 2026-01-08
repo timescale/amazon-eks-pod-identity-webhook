@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/amazon-eks-pod-identity-webhook/pkg/broker"
 	"github.com/aws/amazon-eks-pod-identity-webhook/pkg/containercredentials"
 
 	"github.com/aws/amazon-eks-pod-identity-webhook/pkg"
@@ -82,7 +83,11 @@ func WithAnnotationDomain(domain string) ModifierOpt {
 // WithSALookupGraceTime sets the grace time to wait for service accounts to appear in cache
 func WithSALookupGraceTime(saLookupGraceTime time.Duration) ModifierOpt {
 	return func(m *Modifier) { m.saLookupGraceTime = saLookupGraceTime }
+}
 
+// WithBrokerConfig sets the broker (session tags mode) configuration
+func WithBrokerConfig(config *broker.Config) ModifierOpt {
+	return func(m *Modifier) { m.BrokerConfig = config }
 }
 
 // NewModifier returns a Modifier with default values
@@ -112,6 +117,7 @@ type Modifier struct {
 	Region                     string
 	Cache                      cache.ServiceAccountCache
 	ContainerCredentialsConfig containercredentials.Config
+	BrokerConfig               *broker.Config
 	volName                    string
 	tokenName                  string
 	saLookupGraceTime          time.Duration
@@ -134,6 +140,7 @@ type podPatchConfig struct {
 	TokenPath                       string
 	WebIdentityPatchConfig          *webIdentityPatchConfig
 	ContainerCredentialsPatchConfig *containercredentials.PatchConfig
+	BrokerPatchConfig               *broker.PatchConfig
 }
 
 type webIdentityPatchConfig struct {
@@ -309,6 +316,21 @@ func (m *Modifier) parsePodAnnotations(pod *corev1.Pod, serviceAccountTokenExpir
 
 // getPodSpecPatch gets the patch operation to be applied to the given Pod
 func (m *Modifier) getPodSpecPatch(pod *corev1.Pod, patchConfig *podPatchConfig) ([]patchOperation, bool) {
+	// Check if broker mode should be used
+	if patchConfig.BrokerPatchConfig != nil && patchConfig.BrokerPatchConfig.IsBrokerMode() {
+		brokerPatches, changed := broker.GeneratePatch(pod, patchConfig.BrokerPatchConfig, patchConfig.ContainersToSkip)
+		// Convert broker.PatchOperation to patchOperation
+		var patches []patchOperation
+		for _, bp := range brokerPatches {
+			patches = append(patches, patchOperation{
+				Op:    bp.Op,
+				Path:  bp.Path,
+				Value: bp.Value,
+			})
+		}
+		return patches, changed
+	}
+
 	tokenFilePath := filepath.Join(patchConfig.MountPath, patchConfig.TokenPath)
 
 	betaNodeSelector, _ := pod.Spec.NodeSelector["beta.kubernetes.io/os"]
@@ -465,6 +487,51 @@ func (m *Modifier) buildPodPatchConfig(pod *corev1.Pod) *podPatchConfig {
 		}
 	}
 	klog.V(5).Infof("Value of roleArn after after cache retrieval for service account %s: %s", request.CacheKey(), response.RoleARN)
+
+	// Check for broker mode (session tags) - takes precedence over standard web identity
+	if response.RoleARN != "" && response.TargetRoleARN != "" && m.BrokerConfig != nil && m.BrokerConfig.Enabled {
+		tokenExpiration, containersToSkip := m.parsePodAnnotations(pod, response.TokenExpiration)
+
+		brokerImage := response.BrokerImage
+		if brokerImage == "" {
+			brokerImage = m.BrokerConfig.DefaultBrokerImage
+		}
+
+		credentialsPath := response.CredentialsPath
+		if credentialsPath == "" {
+			credentialsPath = m.BrokerConfig.DefaultCredentialsPath
+		}
+
+		webhookPodCount.WithLabelValues("session_tags_broker").Inc()
+		klog.V(3).Infof("Using broker mode for pod %s/%s (baseRole=%s, targetRole=%s)",
+			pod.Namespace, pod.Name, response.RoleARN, response.TargetRoleARN)
+
+		return &podPatchConfig{
+			ContainersToSkip:                containersToSkip,
+			TokenExpiration:                 tokenExpiration,
+			UseRegionalSTS:                  response.UseRegionalSTS,
+			Audience:                        response.Audience,
+			MountPath:                       m.MountPath,
+			VolumeName:                      m.volName,
+			TokenPath:                       m.tokenName,
+			WebIdentityPatchConfig:          nil,
+			ContainerCredentialsPatchConfig: nil,
+			BrokerPatchConfig: &broker.PatchConfig{
+				BaseRoleARN:     response.RoleARN,
+				TargetRoleARN:   response.TargetRoleARN,
+				SessionTags:     response.SessionTags,
+				BrokerImage:     brokerImage,
+				CredentialsPath: credentialsPath,
+				Region:          m.BrokerConfig.Region,
+				STSEndpoint:     m.BrokerConfig.STSEndpoint,
+				TokenMountPath:  m.MountPath,
+				TokenExpiration: tokenExpiration,
+				Audience:        response.Audience,
+			},
+		}
+	}
+
+	// Use the STS WebIdentity method if role ARN is set
 	if response.RoleARN != "" {
 		tokenExpiration, containersToSkip := m.parsePodAnnotations(pod, response.TokenExpiration)
 

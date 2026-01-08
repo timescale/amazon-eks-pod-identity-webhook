@@ -139,6 +139,144 @@ Or for Kubernetes 1.14+
 
 When running a container with a non-root user, you need to give the container access to the token file by setting the `fsGroup` field in the `securityContext` object.
 
+## Session Tags Mode (ABAC)
+
+Session tags mode enables **Attribute-Based Access Control (ABAC)** for multi-tenant environments. Instead of creating one IAM role per tenant/ServiceAccount, you can use a single shared role with session tags for per-tenant isolation.
+
+### The Problem
+
+When running multi-tenant workloads with IRSA, you typically create one IAM role per tenant. This leads to:
+- **Role quota exhaustion**: AWS limits accounts to ~5,000 IAM roles
+- **O(tenants × regions)** role growth
+- **Operational complexity** managing thousands of roles
+
+### The Solution
+
+Session tags mode uses a **credential broker sidecar** that:
+1. Assumes the base IRSA role via `AssumeRoleWithWebIdentity`
+2. Assumes a shared target role with **session tags** via `AssumeRole`
+3. Writes credentials to a shared file, continuously refreshing them
+
+Your S3/IAM policies can then use `aws:PrincipalTag/*` conditions for per-tenant isolation.
+
+### Enabling Session Tags Mode
+
+Start the webhook with broker mode enabled:
+
+```bash
+amazon-eks-pod-identity-webhook \
+  --enable-broker-mode \
+  --broker-image=public.ecr.aws/eks/pod-identity-broker:latest \
+  --aws-default-region=us-west-2
+```
+
+### Session Tags Annotations
+
+Add these annotations to your ServiceAccount:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-app
+  namespace: default
+  annotations:
+    # Base role (standard IRSA role that can assume the target role)
+    eks.amazonaws.com/role-arn: "arn:aws:iam::111122223333:role/my-base-role"
+    # Target role (shared role, enables broker mode)
+    eks.amazonaws.com/target-role-arn: "arn:aws:iam::111122223333:role/my-shared-role"
+    # Session tags for ABAC (comma-separated key=value pairs)
+    eks.amazonaws.com/session-tags: "tenant-id=abc123,project-id=xyz789"
+    # Optional: Override the broker sidecar image
+    eks.amazonaws.com/broker-image: "my-custom-broker:v1"
+    # Optional: Override the credentials mount path
+    eks.amazonaws.com/credentials-path: "/custom/path"
+```
+
+### Session Tags Annotations Reference
+
+| Annotation | Required | Description |
+|------------|----------|-------------|
+| `eks.amazonaws.com/role-arn` | Yes | Base IRSA role ARN |
+| `eks.amazonaws.com/target-role-arn` | Yes (for broker mode) | Shared target role ARN with session tags |
+| `eks.amazonaws.com/session-tags` | No | Comma-separated `key=value` pairs for STS session tags |
+| `eks.amazonaws.com/broker-image` | No | Override the default broker sidecar image |
+| `eks.amazonaws.com/credentials-path` | No | Custom path for credentials mount (default: `/var/run/aws-credentials`) |
+
+### IAM Setup for Session Tags
+
+1. **Base Role Trust Policy** (trusts the OIDC provider):
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "Federated": "arn:aws:iam::ACCOUNT:oidc-provider/OIDC_PROVIDER"
+  },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {
+      "OIDC_PROVIDER:aud": "sts.amazonaws.com"
+    }
+  }
+}
+```
+
+2. **Base Role Policy** (allows assuming the shared role):
+```json
+{
+  "Effect": "Allow",
+  "Action": ["sts:AssumeRole", "sts:TagSession"],
+  "Resource": "arn:aws:iam::ACCOUNT:role/my-shared-role"
+}
+```
+
+3. **Shared Role Trust Policy** (trusts the base role):
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "AWS": "arn:aws:iam::ACCOUNT:role/my-base-role"
+  },
+  "Action": ["sts:AssumeRole", "sts:TagSession"]
+}
+```
+
+4. **S3 Policy Using Session Tags** (ABAC):
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject", "s3:PutObject"],
+  "Resource": "arn:aws:s3:::my-bucket/${aws:PrincipalTag/tenant-id}/*"
+}
+```
+
+### How It Works
+
+When broker mode is enabled and a pod uses a ServiceAccount with `target-role-arn`:
+
+1. The webhook injects a **credential broker sidecar** container
+2. The broker reads the IRSA token and performs:
+   - `AssumeRoleWithWebIdentity` on the base role
+   - `AssumeRole` on the target role with session tags
+3. Credentials are written to `/var/run/aws-credentials/credentials`
+4. Application containers get `AWS_SHARED_CREDENTIALS_FILE` set to this path
+5. The broker continuously refreshes credentials before expiry
+
+### Session Tags CLI Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-broker-mode` | `false` | Enable session tags broker mode |
+| `--broker-image` | `ghcr.io/aws/eks-pod-identity-broker:latest` | Default broker sidecar image |
+| `--broker-credentials-path` | `/var/run/aws-credentials` | Default credentials mount path |
+| `--broker-sts-endpoint` | (empty) | Custom STS endpoint (for testing) |
+
+### Building the Broker Image
+
+```bash
+make broker-image BROKER_IMAGE=my-registry/my-broker:v1
+```
+
 ## Usage
 
 ```
@@ -147,6 +285,10 @@ Usage of amazon-eks-pod-identity-webhook:
       --alsologtostderr                      log to standard error as well as files
       --annotation-prefix string             The Service Account annotation to look for (default "eks.amazonaws.com")
       --aws-default-region string            If set, AWS_DEFAULT_REGION and AWS_REGION will be set to this value in mutated containers
+      --broker-credentials-path string       Path to mount the shared AWS credentials file in broker mode (default "/var/run/aws-credentials")
+      --broker-image string                  Container image for the credential broker sidecar (default "ghcr.io/aws/eks-pod-identity-broker:latest")
+      --broker-sts-endpoint string           Custom STS endpoint for broker mode (for testing)
+      --enable-broker-mode                   Enable session tags broker mode for ABAC
       --enable-debugging-handlers            Enable debugging handlers. Currently /debug/alpha/cache is supported
       --in-cluster                           Use in-cluster authentication and certificate request API (default true)
       --kube-api string                      (out-of-cluster) The url to the API server

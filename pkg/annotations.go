@@ -1,16 +1,16 @@
 /*
-  Copyright 2010 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Copyright 2010 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-  Licensed under the Apache License, Version 2.0 (the "License").
-  You may not use this file except in compliance with the License.
-  A copy of the License is located at
+Licensed under the Apache License, Version 2.0 (the "License").
+You may not use this file except in compliance with the License.
+A copy of the License is located at
 
-      http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
-  or in the "license" file accompanying this file. This file is distributed
-  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
-  express or implied. See the License for the specific language governing
-  permissions and limitations under the License.
+or in the "license" file accompanying this file. This file is distributed
+on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+express or implied. See the License for the specific language governing
+permissions and limitations under the License.
 */
 package pkg
 
@@ -26,4 +26,14 @@ const (
 
 	// A comma-separated list of container names to skip adding environment variables and volumes to. Applies to `initContainers` and `containers`
 	SkipContainersAnnotation = "skip-containers"
+
+	// Session Tags / Broker Mode Annotations
+	// TargetRoleARN is the shared role to assume with session tags (enables broker mode)
+	TargetRoleARNAnnotation = "target-role-arn"
+	// SessionTags is a comma-separated list of key=value pairs for STS session tags
+	SessionTagsAnnotation = "session-tags"
+	// BrokerImage overrides the default credential broker sidecar image
+	BrokerImageAnnotation = "broker-image"
+	// CredentialsPath overrides the default path for the shared credentials file
+	CredentialsPathAnnotation = "credentials-path"
 )

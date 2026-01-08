@@ -45,6 +45,16 @@ type Entry struct {
 	Audience        string
 	UseRegionalSTS  bool
 	TokenExpiration int64
+
+	// Session Tags / Broker Mode fields
+	// TargetRoleARN is the shared role to assume with session tags
+	TargetRoleARN string
+	// SessionTags are key=value pairs to attach to the STS session
+	SessionTags string
+	// BrokerImage overrides the default broker sidecar image
+	BrokerImage string
+	// CredentialsPath overrides the default credentials mount path
+	CredentialsPath string
 }
 
 type Request struct {
@@ -64,6 +74,12 @@ type Response struct {
 	TokenExpiration int64
 	FoundInCache    bool
 	Notifier        <-chan struct{}
+
+	// Session Tags / Broker Mode fields
+	TargetRoleARN   string
+	SessionTags     string
+	BrokerImage     string
+	CredentialsPath string
 }
 
 type ServiceAccountCache interface {
@@ -132,6 +148,11 @@ func (c *serviceAccountCache) Get(req Request) Response {
 			result.Audience = entry.Audience
 			result.UseRegionalSTS = entry.UseRegionalSTS
 			result.TokenExpiration = entry.TokenExpiration
+			// Session Tags/Broker Mode fields
+			result.TargetRoleARN = entry.TargetRoleARN
+			result.SessionTags = entry.SessionTags
+			result.BrokerImage = entry.BrokerImage
+			result.CredentialsPath = entry.CredentialsPath
 			return result
 		}
 	}
@@ -146,6 +167,11 @@ func (c *serviceAccountCache) Get(req Request) Response {
 			result.Audience = entry.Audience
 			result.UseRegionalSTS = entry.UseRegionalSTS
 			result.TokenExpiration = entry.TokenExpiration
+			// Session Tags/Broker Mode fields
+			result.TargetRoleARN = entry.TargetRoleARN
+			result.SessionTags = entry.SessionTags
+			result.BrokerImage = entry.BrokerImage
+			result.CredentialsPath = entry.CredentialsPath
 			return result
 		}
 	}
@@ -253,6 +279,36 @@ func (c *serviceAccountCache) addSA(sa *v1.ServiceAccount) {
 			entry.TokenExpiration = pkg.ValidateMinTokenExpiration(tokenExpiration)
 		}
 	}
+
+	// Session Tags/Broker Mode annotations
+	if targetRoleARN, ok := sa.Annotations[c.annotationPrefix+"/"+pkg.TargetRoleARNAnnotation]; ok {
+		// Validate target role ARN format
+		if !strings.Contains(targetRoleARN, "arn:") && c.composeRoleArn.Enabled {
+			targetRoleARN = fmt.Sprintf("arn:%s:iam::%s:role/%s", c.composeRoleArn.Partition, c.composeRoleArn.AccountID, targetRoleARN)
+		}
+		matched, err := regexp.Match(`^arn:aws[a-z0-9-]*:iam::\d{12}:role\/[\w-\/.@+=,]+$`, []byte(targetRoleARN))
+		if err != nil {
+			klog.Errorf("Regex error for target-role-arn: %v", err)
+		} else if !matched {
+			klog.Warningf("target-role-arn is invalid: %s", targetRoleARN)
+		} else {
+			entry.TargetRoleARN = targetRoleARN
+			klog.V(4).Infof("Service account %s/%s configured for broker mode with target role: %s", sa.Namespace, sa.Name, targetRoleARN)
+		}
+	}
+
+	if sessionTags, ok := sa.Annotations[c.annotationPrefix+"/"+pkg.SessionTagsAnnotation]; ok {
+		entry.SessionTags = sessionTags
+	}
+
+	if brokerImage, ok := sa.Annotations[c.annotationPrefix+"/"+pkg.BrokerImageAnnotation]; ok {
+		entry.BrokerImage = brokerImage
+	}
+
+	if credentialsPath, ok := sa.Annotations[c.annotationPrefix+"/"+pkg.CredentialsPathAnnotation]; ok {
+		entry.CredentialsPath = credentialsPath
+	}
+
 	c.webhookUsage.Set(1)
 
 	c.setSA(sa.Name, sa.Namespace, entry)
