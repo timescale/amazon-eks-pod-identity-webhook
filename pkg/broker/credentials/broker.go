@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -31,6 +32,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	// arnRegex validates AWS ARN format for IAM roles
+	arnRegex = regexp.MustCompile(`^arn:aws[a-z0-9-]*:iam::\d{12}:role\/[\w+=,.@\-\/]+$`)
+)
+
 const (
 	// DefaultRefreshBuffer is how long before expiry we refresh credentials
 	DefaultRefreshBuffer = 5 * time.Minute
@@ -38,6 +44,10 @@ const (
 	DefaultSessionDuration = 1 * time.Hour
 	// MinRefreshInterval prevents spinning if credentials have very short TTL
 	MinRefreshInterval = 30 * time.Second
+	// MaxSessionNameLength is the AWS limit for session names
+	MaxSessionNameLength = 64
+	// MaxBackoffDuration caps the exponential backoff
+	MaxBackoffDuration = 5 * time.Minute
 )
 
 // Config holds the broker configuration
@@ -88,6 +98,12 @@ func New(cfg Config) (*Broker, error) {
 		cfg.SessionName = "eks-broker"
 	}
 
+	// Truncate session name to AWS limit
+	if len(cfg.SessionName) > MaxSessionNameLength {
+		cfg.SessionName = cfg.SessionName[:MaxSessionNameLength]
+		klog.V(2).Infof("Truncated session name to %d characters", MaxSessionNameLength)
+	}
+
 	// Validate required fields
 	if cfg.TokenPath == "" {
 		return nil, fmt.Errorf("TokenPath is required")
@@ -100,6 +116,14 @@ func New(cfg Config) (*Broker, error) {
 	}
 	if cfg.CredentialsPath == "" {
 		return nil, fmt.Errorf("CredentialsPath is required")
+	}
+
+	// Validate ARN formats
+	if !arnRegex.MatchString(cfg.BaseRoleARN) {
+		return nil, fmt.Errorf("BaseRoleARN has invalid format: %s", cfg.BaseRoleARN)
+	}
+	if !arnRegex.MatchString(cfg.TargetRoleARN) {
+		return nil, fmt.Errorf("TargetRoleARN has invalid format: %s", cfg.TargetRoleARN)
 	}
 
 	writer := NewCredentialWriter(cfg.CredentialsPath)
@@ -120,6 +144,7 @@ func (b *Broker) Run(ctx context.Context) error {
 		return fmt.Errorf("initial credential refresh failed: %w", err)
 	}
 
+	backoff := MinRefreshInterval
 	for {
 		// Calculate sleep duration
 		sleepDuration := time.Until(expiry) - b.config.RefreshBuffer
@@ -139,9 +164,21 @@ func (b *Broker) Run(ctx context.Context) error {
 			if err != nil {
 				klog.Errorf("Failed to refresh credentials: %v", err)
 				// Use exponential backoff on failure
-				time.Sleep(10 * time.Second)
+				klog.V(1).Infof("Backing off for %s before retry", backoff)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				// Double backoff, up to max
+				backoff *= 2
+				if backoff > MaxBackoffDuration {
+					backoff = MaxBackoffDuration
+				}
 				continue
 			}
+			// Reset backoff on success
+			backoff = MinRefreshInterval
 			expiry = newExpiry
 		}
 	}

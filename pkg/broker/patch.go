@@ -17,12 +17,20 @@ package broker
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/aws/amazon-eks-pod-identity-webhook/pkg"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
+)
+
+var (
+	// sessionTagKeyRegex validates AWS session tag keys (alphanumeric, +-=._:/@)
+	sessionTagKeyRegex = regexp.MustCompile(`^[\w\+\-=\._:/@]+$`)
+	// sessionTagValueRegex validates AWS session tag values
+	sessionTagValueRegex = regexp.MustCompile(`^[\w\s\+\-=\._:/@]*$`)
 )
 
 // PatchOperation represents a JSON patch operation
@@ -193,6 +201,17 @@ func createSidecarPatch(pod *corev1.Pod, config *PatchConfig) []PatchOperation {
 			if len(kv) == 2 {
 				key := strings.TrimSpace(kv[0])
 				value := strings.TrimSpace(kv[1])
+
+				// Validate session tag key and value format
+				if !sessionTagKeyRegex.MatchString(key) {
+					klog.Warningf("Skipping invalid session tag key: %s", key)
+					continue
+				}
+				if !sessionTagValueRegex.MatchString(value) {
+					klog.Warningf("Skipping invalid session tag value for key %s", key)
+					continue
+				}
+
 				envKey := "BROKER_TAG_" + strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
 				env = append(env, corev1.EnvVar{
 					Name:  envKey,

@@ -41,6 +41,53 @@ func TestNew_ValidConfig(t *testing.T) {
 	assert.NotNil(t, broker)
 }
 
+func TestNew_InvalidBaseRoleARN(t *testing.T) {
+	cfg := Config{
+		TokenPath:       "/path/to/token",
+		BaseRoleARN:     "invalid-arn",
+		TargetRoleARN:   "arn:aws:iam::123456789012:role/target-role",
+		CredentialsPath: "/path/to/credentials",
+	}
+
+	broker, err := New(cfg)
+
+	assert.Error(t, err)
+	assert.Nil(t, broker)
+	assert.Contains(t, err.Error(), "BaseRoleARN has invalid format")
+}
+
+func TestNew_InvalidTargetRoleARN(t *testing.T) {
+	cfg := Config{
+		TokenPath:       "/path/to/token",
+		BaseRoleARN:     "arn:aws:iam::123456789012:role/base-role",
+		TargetRoleARN:   "not-a-valid-arn",
+		CredentialsPath: "/path/to/credentials",
+	}
+
+	broker, err := New(cfg)
+
+	assert.Error(t, err)
+	assert.Nil(t, broker)
+	assert.Contains(t, err.Error(), "TargetRoleARN has invalid format")
+}
+
+func TestNew_SessionNameTruncation(t *testing.T) {
+	longName := "this-is-a-very-long-session-name-that-exceeds-the-sixty-four-character-aws-limit-for-session-names"
+	cfg := Config{
+		TokenPath:       "/path/to/token",
+		BaseRoleARN:     "arn:aws:iam::123456789012:role/base-role",
+		TargetRoleARN:   "arn:aws:iam::123456789012:role/target-role",
+		CredentialsPath: "/path/to/credentials",
+		SessionName:     longName,
+	}
+
+	broker, err := New(cfg)
+
+	require.NoError(t, err)
+	assert.NotNil(t, broker)
+	assert.LessOrEqual(t, len(broker.config.SessionName), 64)
+}
+
 func TestNew_DefaultValues(t *testing.T) {
 	cfg := Config{
 		TokenPath:       "/path/to/token",

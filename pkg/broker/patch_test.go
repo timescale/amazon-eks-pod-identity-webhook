@@ -405,6 +405,53 @@ func TestGeneratePatch_InitContainers(t *testing.T) {
 	assert.True(t, hasInitContainerPatch, "Init containers should be patched")
 }
 
+func TestGeneratePatch_InvalidSessionTags(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "app",
+					Image: "my-app:latest",
+				},
+			},
+		},
+	}
+
+	config := &PatchConfig{
+		BaseRoleARN:     "arn:aws:iam::123456789012:role/base-role",
+		TargetRoleARN:   "arn:aws:iam::123456789012:role/shared-role",
+		SessionTags:     "valid-key=valid-value,invalid<key>=value,key=invalid<value>",
+		BrokerImage:     "my-broker:latest",
+		CredentialsPath: "/var/run/aws-credentials",
+	}
+
+	patches, _ := GeneratePatch(pod, config, nil)
+
+	// Find the broker container and verify only valid tags are included
+	for _, patch := range patches {
+		if patch.Path == "/spec/containers/-" {
+			if container, ok := patch.Value.(corev1.Container); ok {
+				if container.Name == pkg.BrokerContainerName {
+					envMap := make(map[string]string)
+					for _, env := range container.Env {
+						envMap[env.Name] = env.Value
+					}
+
+					// Valid tag should be present
+					assert.Equal(t, "valid-value", envMap["BROKER_TAG_VALID_KEY"])
+					// Invalid tags should NOT be present
+					_, hasInvalidKey := envMap["BROKER_TAG_INVALID<KEY>"]
+					assert.False(t, hasInvalidKey, "Invalid key should be skipped")
+				}
+			}
+		}
+	}
+}
+
 func TestGeneratePatch_RegionAndSTSEndpoint(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
